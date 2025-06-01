@@ -1,0 +1,21 @@
+menu "WEB tunnel"
+
+    config WEB_TUNNEL_URI
+        string "WEB tunnels provider address"
+        default "wss://growe.ddns-ip.net:3333"
+        help
+            "Main server who provides tunnels".
+            
+    config WEB_TUNNEL_DOMAIN
+        string "domain"
+        default ""
+        help
+            "You account public domain for remoute devices connections".
+
+    config WEB_TUNNEL_SECRET
+        string "account secret"
+        default ""
+        help
+            "You account secret key for remoute devices".
+
+endmenu

@@ -1,0 +1,18 @@
+include($ENV{IDF_PATH}/tools/cmake/version.cmake)
+
+idf_component_register(
+    SRCS
+        "src/tunnel.c"
+        "src/utils.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        freertos
+        esp-tls
+        esp_common
+        esp_wifi
+        esp_timer
+        json
+    EMBED_TXTFILES 
+        "lte_root.pem"
+)
