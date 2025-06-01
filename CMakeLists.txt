@@ -1,5 +1,3 @@
-include($ENV{IDF_PATH}/tools/cmake/version.cmake)
-
 idf_component_register(
     SRCS
         "src/tunnel.c"
