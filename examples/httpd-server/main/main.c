@@ -106,6 +106,6 @@ void app_main(void)
     };
     httpd_register_uri_handler(server, &hellow_uri);
 
-    ESP_LOGI(TAG, "Server started");
+    ESP_LOGI(TAG, "Server started, HDR: %d", CONFIG_HTTPD_MAX_REQ_HDR_LEN);
     vTaskDelete(NULL);
 }

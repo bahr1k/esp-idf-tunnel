@@ -320,9 +320,9 @@ void send_pause_request(void)
     }
     else
     {
-        cJSON *start = cJSON_CreateObject();
-        cJSON_AddStringToObject(start, "type", "stop");
-        char *stop_str = cJSON_PrintUnformatted(start);
+        cJSON *stop = cJSON_CreateObject();
+        cJSON_AddStringToObject(stop, "type", "stop");
+        char *stop_str = cJSON_PrintUnformatted(stop);
         if (stop_str && strlen(stop_str) > 0)
         {
             ws_send_text(stop_str);
@@ -332,7 +332,7 @@ void send_pause_request(void)
         {
             ESP_LOGE(TAG, "Failed to send stop request");
         }
-        cJSON_Delete(start);
+        cJSON_Delete(stop);
     }
     if (use_local && local_sockfd > 0)
     {
