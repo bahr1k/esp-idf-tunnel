@@ -614,6 +614,14 @@ static esp_err_t tunnel_process_text_frame()
             }
             else if (strcmp(type->valuestring, "start") == 0)
             {
+                cJSON *result = cJSON_GetObjectItem(json, "status");
+                if (!result || !cJSON_IsString(result) || strcmp(result->valuestring, "ok") != 0)
+                {
+                    ESP_LOGE(TAG, "Start tunnel failed, status: %s", result->valuestring);
+                    info.tunnel_state = TUNNEL_STATE_SUSPEND;
+                    tunnel_on_error(false, NULL);
+                }
+
                 cJSON *suspend = cJSON_GetObjectItem(json, "suspend");
                 cJSON *eof = cJSON_GetObjectItem(json, "eof");
 

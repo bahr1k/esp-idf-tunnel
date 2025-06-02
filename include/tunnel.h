@@ -98,7 +98,7 @@ typedef struct
     uint8_t non_block;   // 0 - blocking, 1 - non-blocking
 } tunnel_config_t;
 
-#define TUNNEL_DEFAULT_CONFIG {              \
+#define TUNNEL_DEFAULT_CONFIG() {            \
     .provider_URI = CONFIG_WEB_TUNNEL_URI,   \
     .domain = CONFIG_WEB_TUNNEL_DOMAIN,      \
     .secret = "",                            \
