@@ -2,7 +2,7 @@ menu "WEB tunnel"
 
     config WEB_TUNNEL_URI
         string "WEB tunnels provider address"
-        default "wss://growe.ddns-ip.net:3333"
+        default "wss://device-tunnel.top:3333"
         help
             "Main server who provides tunnels".
             

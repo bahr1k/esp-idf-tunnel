@@ -15,7 +15,7 @@ static esp_err_t hellow_html_get_handler(httpd_req_t *req)
 {
     extern const unsigned char hellow_html_start[] asm("_binary_hellow_world_html_start");
     extern const unsigned char hellow_html_end[] asm("_binary_hellow_world_html_end");
-    const size_t hellow_html_size = (hellow_html_start - hellow_html_end);
+    const size_t hellow_html_size = (hellow_html_end - hellow_html_start);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, (const char *)hellow_html_start, hellow_html_size);
     return ESP_OK;
@@ -68,6 +68,7 @@ void app_main(void)
     tunnel.secret = "6lHPnL4BkTznVtn0n9eg0JrEdFjymHQQ1NqhHxW17tpofUH4qpbadH8eNej572ry"; // can be set in config
     tunnel.name = desc->project_name;                                                   // name of yuor device
     tunnel.is_public = 1;                                                               // webserver can be accessed by anyone
+    tunnel.auto_eof = 1;                                                                // automatically send EOF marker, for the lazy but works slowly
     ESP_ERROR_CHECK(tunnel_init(&tunnel));
 
     // Setup WiFi
@@ -81,8 +82,9 @@ void app_main(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = "BOB",
-            .password = "0937388409"},
+            .ssid = "YOUR_SSID",
+            .password = "YOUR_PASSWORD",
+        },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
@@ -104,8 +106,17 @@ void app_main(void)
         .method = HTTP_GET,
         .handler = hellow_html_get_handler,
     };
+    // add handler for current device if is not a primary
+    char uri[128];
+    snprintf(uri, sizeof(uri), "/%s", desc->project_name);
     httpd_register_uri_handler(server, &hellow_uri);
+    httpd_uri_t device_uri = {
+        .uri = uri,
+        .method = HTTP_GET,
+        .handler = hellow_html_get_handler,
+    };
+    httpd_register_uri_handler(server, &device_uri);
 
-    ESP_LOGI(TAG, "Server started, HDR: %d", CONFIG_HTTPD_MAX_REQ_HDR_LEN);
+    ESP_LOGI(TAG, "Server started");
     vTaskDelete(NULL);
 }
