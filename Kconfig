@@ -1,21 +1,21 @@
-menu "WEB tunnel"
+menu "Web Tunnel"
 
     config WEB_TUNNEL_URI
-        string "WEB tunnels provider address"
+        string "Web tunnels provider address"
         default "wss://device-tunnel.top:3333"
         help
-            "Main server who provides tunnels".
-            
+            "Main server that provides tunnels"
+
     config WEB_TUNNEL_DOMAIN
-        string "domain"
+        string "Domain"
         default ""
         help
-            "You account public domain for remoute devices connections".
+            "Your account's public domain for remote device connections"
 
     config WEB_TUNNEL_SECRET
-        string "account secret"
+        string "Account secret"
         default ""
         help
-            "You account secret key for remoute devices".
+            "Your account's secret key for remote devices"
 
 endmenu

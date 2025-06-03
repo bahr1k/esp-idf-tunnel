@@ -77,7 +77,7 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
     // Длина полезной нагрузки
     if (len < 126)
     {
-        header[header_len++] = 0x80 | len; // mask бит + длина
+        header[header_len++] = 0x80 | len; // mask bit + len
     }
     else if (len < 65536)
     {
@@ -88,7 +88,7 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
     else
     {
         header[header_len++] = 0x80 | 127;
-        for (int i = 0; i < 4; i++) // 64-бит, первые 4 нуля
+        for (int i = 0; i < 4; i++) // 64-bit payload length, first 4 bytes are zero.
             header[header_len++] = 0;
         header[header_len++] = (len >> 24) & 0xFF;
         header[header_len++] = (len >> 16) & 0xFF;
@@ -495,7 +495,7 @@ retry:
         }
         if (len < 16)
         {
-            ESP_LOGE(TAG, "Failed connection with errno: %d, %s", err, strerror(err));
+            ESP_LOGE(TAG, "Failed to establish connection, errno: %d (%s)", err, strerror(err));
             goto fail;
         }
         break;
@@ -519,11 +519,11 @@ retry:
             ESP_LOGE(TAG, "Expected '101 Switching Protocols', got: %s", status_line);
             // Дополнительная диагностика для популярных ошибок
             if (strstr(status_line, "400"))
-                ESP_LOGE(TAG, "Hint: Check request format and headers");
+                ESP_LOGE(TAG, "Hint: Verify request format and headers");
             else if (strstr(status_line, "404"))
-                ESP_LOGE(TAG, "Hint: Check WebSocket endpoint path");
+                ESP_LOGE(TAG, "Hint: Verify WebSocket endpoint path");
             else if (strstr(status_line, "403"))
-                ESP_LOGE(TAG, "Hint: Check authentication or origin");
+                ESP_LOGE(TAG, "Hint: Verify authentication or origin");
         }
         goto fail;
     }
@@ -565,7 +565,7 @@ retry:
     ws_state = WS_STATE_CONNECTED;
     last_data_dt = esp_timer_get_time();
 
-    ESP_LOGI(TAG, "Tunnel connected, wait for hello message");
+    ESP_LOGI(TAG, "Tunnel connected, waiting for hello message");
     return ESP_OK;
 
 fail:
@@ -589,7 +589,7 @@ static esp_err_t tunnel_process_text_frame()
         cJSON *type = cJSON_GetObjectItem(json, "type");
         if (type && cJSON_IsString(type))
         {
-            if (strcmp(type->valuestring, "hellow") == 0)
+            if (strcmp(type->valuestring, "hello") == 0)
             {
                 info.tunnel_state = TUNNEL_STATE_AUTHENTICATING;
                 send_login_request();
@@ -660,7 +660,7 @@ static esp_err_t tunnel_process_text_frame()
             {
                 cJSON *message = cJSON_GetObjectItem(json, "message");
                 if (message && cJSON_IsString(message))
-                    ESP_LOGW(TAG, "income error: %s", message->valuestring);
+                    ESP_LOGW(TAG, "Incoming error: %s", message->valuestring);
                 // tunnel_on_error(false, "Protocol error");
             }
             else if (strcmp(type->valuestring, "pause") == 0)
@@ -714,7 +714,7 @@ static esp_err_t tunnel_process_bin_frame(bool fin)
         if (header_end == 0 && rx_len >= MAX_HTTP_REQUEST_SIZE)
         {
             send_internal_error("Request headers not found or too long");
-            return tunnel_on_error(false, "Header end not found, or to long");
+            return tunnel_on_error(false, "Header end not found, or too long");
         }
         ESP_LOGD(TAG, "INCOMING bin frame len=%lu, fin=%d message: %.*s",
                  rx_len, fin, (int)(rx_len > 64 ? 64 : rx_len), rx_buffer);
@@ -978,7 +978,7 @@ static esp_err_t tunnel_process_incoming_data()
                     }
                     else
                     {
-                        ESP_LOGE(TAG, "Failed read ws payload error: %d (%s)", errno, strerror(errno));
+                        ESP_LOGE(TAG, "Failed to read WebSocket payload: %d (%s)", errno, strerror(errno));
                         return tunnel_on_error(true, "Read error");
                     }
                 }
@@ -1118,7 +1118,7 @@ static esp_err_t tunnel_outgoing_data_auto_eof(void)
                 return ESP_OK;
 
             total_sent += info.eof_marker_len;
-            ESP_LOGI(TAG, "WS Responce ended, sent %llu bytes (connection closed)", total_sent);
+            ESP_LOGI(TAG, "WS Response ended, sent %llu bytes (connection closed)", total_sent);
             return send_eof();
         }
         else if (bytes_read < 0)
@@ -1140,7 +1140,7 @@ static esp_err_t tunnel_outgoing_data_auto_eof(void)
                 {
                     if (wait_max_count <= 0)
                     {
-                        ESP_LOGI(TAG, "WS sended responce %llu bytes", total_sent + info.eof_marker_len);
+                        ESP_LOGI(TAG, "WS sent response %llu bytes", total_sent + info.eof_marker_len);
                         if (header_sent)
                             return send_eof();
                     }

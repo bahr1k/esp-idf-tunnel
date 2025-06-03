@@ -75,33 +75,32 @@ typedef int tunnel_rx_func_t(const char *data, size_t len);
 
 typedef struct
 {
-    const char *provider_URI;
-    const char *domain;
-    const char *secret;
-    const char *name;
+    const char *provider_URI; // WebSocket provider URI (e.g., wss://device-tunnel.top:3333)
+    const char *domain;       // Client domain
+    const char *secret;       // Your account secret
+    const char *name;         // Any valid device name for routing
 
-    // const char *server_root_cert;
-    const char *client_cert;
-    const char *client_key;
+    const char *client_cert; // Client certificate for mutual TLS (optional)
+    const char *client_key;  // Client key for mutual TLS (optional)
 
-    int32_t reconnect_timeout_ms; // 0 - disabled
-                                  //    int32_t network_timeout_ms;
-    size_t rx_buffer_size;
-    size_t tx_buffer_size;
+    int32_t reconnect_timeout_ms; // Reconnect timeout in milliseconds (0 to disable)
 
-    tunnel_rx_func_t *rx_func;
-    tunnel_tx_func_t *tx_func;
+    size_t rx_buffer_size; // Receive buffer size
+    size_t tx_buffer_size; // Transmit buffer size
 
-    uint16_t local_port; // 0 - disabled local server proxy
+    tunnel_rx_func_t *rx_func; // Manula function for receiving data (used if local server proxy is disabled)
+    tunnel_tx_func_t *tx_func; // Manula function for sending data (used if local server proxy is disabled)
+
+    uint16_t local_port; // 0 - disabled local server proxy (you need to provide custom tunnel_tx_func and tunnel_rx_func)
     uint8_t auto_eof;    // 0 - auto send EOF markers in responses
     uint8_t is_public;   // 0 - private, 1 - public
-    uint8_t non_block;   // 0 - blocking, 1 - non-blocking
+    uint8_t non_block;   // Socket mode (0 = blocking, 1 = non-blocking)
 } tunnel_config_t;
 
 #define TUNNEL_DEFAULT_CONFIG() {            \
     .provider_URI = CONFIG_WEB_TUNNEL_URI,   \
     .domain = CONFIG_WEB_TUNNEL_DOMAIN,      \
-    .secret = "",                            \
+    .secret = CONFIG_WEB_TUNNEL_SECRET,      \
     .name = "ESP-32",                        \
     .reconnect_timeout_ms = 30000,           \
     .auto_eof = 0,                           \
