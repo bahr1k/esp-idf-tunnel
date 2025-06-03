@@ -1984,12 +1984,12 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # end of Wi-Fi Provisioning Manager
 
 #
-# WEB tunnel
+# Web Tunnel
 #
-CONFIG_WEB_TUNNEL_URI="wss://growe.ddns-ip.net:3333"
+CONFIG_WEB_TUNNEL_URI="wss://device-tunnel.top:3333"
 CONFIG_WEB_TUNNEL_DOMAIN=""
 CONFIG_WEB_TUNNEL_SECRET=""
-# end of WEB tunnel
+# end of Web Tunnel
 # end of Component config
 
 # CONFIG_IDF_EXPERIMENTAL_FEATURES is not set

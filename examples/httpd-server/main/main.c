@@ -16,9 +16,10 @@ static const char *TAG = "example";
 #if MANUAL_EOF
 static void send_eof(httpd_req_t *req)
 {
-    tunnel_info_t *tunnel;
+    tunnel_info_t tunnel;
     tunnel_get_info(&tunnel);
-    httpd_send(req, (char *)tunnel->eof_marker, tunnel->eof_marker_len);
+    if (tunnel.eof_marker)
+        httpd_send(req, (char *)tunnel.eof_marker, tunnel.eof_marker_len);
 }
 #endif
 
@@ -101,8 +102,8 @@ void app_main(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = "BOB",
-            .password = "0937388409",
+            .ssid = "Your SSID",
+            .password = "Your Password",
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
