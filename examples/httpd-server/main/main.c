@@ -11,7 +11,7 @@
 
 static const char *TAG = "example";
 
-#define MANUAL_EOF 1
+#define MANUAL_EOF 0
 
 #if MANUAL_EOF
 static void send_eof(httpd_req_t *req)
