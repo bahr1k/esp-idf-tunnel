@@ -111,7 +111,7 @@ typedef struct
         .rx_func = NULL,                                 \
         .tx_func = NULL,                                 \
         .local_port = 80,                                \
-        .auto_eof = 0,                                   \
+        .auto_eof = 1,                                   \
         .is_public = 0,                                  \
         .non_block = 1}
 
