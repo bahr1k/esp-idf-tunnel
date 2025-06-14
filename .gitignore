@@ -3,3 +3,4 @@ examples/httpd-server/buiid/
 examples/httpd-server/.vscode/
 examples/httpd-server/dependencies.lock
 examples/httpd-server/managed_components
+update.txt
