@@ -3,4 +3,4 @@ dependencies:
 description: Simple websocket tunnel component for esp-idf
 issues: https://github.com/bahr1k/esp-idf-tunnel/issues
 url: https://github.com/bahr1k/esp-idf-tunnel
-version: "v0.3.2"
+version: "0.3.2"
