@@ -97,20 +97,23 @@ typedef struct
     uint8_t non_block;   // Socket mode (0 = blocking, 1 = non-blocking)
 } tunnel_config_t;
 
-#define TUNNEL_DEFAULT_CONFIG() {            \
-    .provider_URI = CONFIG_WEB_TUNNEL_URI,   \
-    .domain = CONFIG_WEB_TUNNEL_DOMAIN,      \
-    .secret = CONFIG_WEB_TUNNEL_SECRET,      \
-    .name = "ESP-32",                        \
-    .reconnect_timeout_ms = 30000,           \
-    .auto_eof = 0,                           \
-    .is_public = 0,                          \
-    .non_block = 1,                          \
-    .local_port = 80,                        \
-    .client_cert = NULL,                     \
-    .client_key = NULL,                      \
-    .rx_buffer_size = MAX_HTTP_REQUEST_SIZE, \
-    .tx_buffer_size = TUNNEL_DEFAULT_TX_BUFFER_SIZE}
+#define TUNNEL_DEFAULT_CONFIG()                          \
+    {                                                    \
+        .provider_URI = "wss://device-tunnel.top:3333",  \
+        .domain = NULL,                                  \
+        .secret = NULL,                                  \
+        .name = "ESP-32",                                \
+        .client_cert = NULL,                             \
+        .client_key = NULL,                              \
+        .reconnect_timeout_ms = 30000,                   \
+        .rx_buffer_size = MAX_HTTP_REQUEST_SIZE,         \
+        .tx_buffer_size = TUNNEL_DEFAULT_TX_BUFFER_SIZE, \
+        .rx_func = NULL,                                 \
+        .tx_func = NULL,                                 \
+        .local_port = 80,                                \
+        .auto_eof = 0,                                   \
+        .is_public = 0,                                  \
+        .non_block = 1}
 
 #ifdef __cplusplus
 extern "C"
@@ -167,7 +170,6 @@ extern "C"
 #endif
 
 #ifdef __cplusplus
-    extern "C"
 }
 #endif
 #endif
