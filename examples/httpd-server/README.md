@@ -1,119 +1,137 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+# esp-idf-tunnel
 
-# Simple HTTP File Server Example
+**esp-idf-tunnel** is an ESP-IDF component that allows your ESP32 to establish an outbound, secure WebSocket tunnel to a remote service, enabling HTTPS access to your device from anywhere without port forwarding or a static IP. You can register any domain (including free subdomains from providers like No-IP or ClouDNS) or use your own custom domain and configure it in one place.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Features
 
-HTTP file server example demonstrates file serving with both upload and download capability, using the `esp_http_server` component of ESP-IDF. This example can use one of the following options for data storage:
+- 📡 Remote HTTPS access to ESP32 behind NAT/firewalls  
+- 🔐 Secure WebSocket-based tunneling  
+- 🌍 No port forwarding or public IP required  
+- ⚙️ Easy integration via `idf_component.yml` (or as a standalone clone)  
+- 🔧 All tunnel parameters (domain, secret, etc.) can be set in the config  
 
-- SPIFFS filesystem in SPI Flash. This option works on any ESP development board without any extra hardware.
+## How It Works
 
-- FAT filesystem on an SD card. Both SDSPI and SDMMC drivers are supported. You need a development board with an SD card slot to use this option.
+1. **ESP32** opens a persistent WebSocket connection to a tunnel service endpoint (hosted under your domain).  
+2. The **tunnel service** accepts incoming HTTPS requests for your domain and forwards them over the WebSocket to your ESP32.  
+3. ESP32 handles each request locally (for example, serving pages, reading sensors, toggling GPIOs) and returns a response back through the tunnel.  
 
-The following URIs are provided by the server:
+## Quick Start
 
-| URI                  | Method  | Description                                                                               |
-|----------------------|---------|-------------------------------------------------------------------------------------------|
-|`index.html`          | GET     | Redirects to `/`                                                                          |
-|`favicon.ico`         | GET     | Browsers use this path to retrieve page icon which is embedded in flash                   |
-|`/`                   | GET     | Responds with webpage displaying list of files on the filesystem and form for uploading new files |
-|`/<file path>`        | GET     | For downloading files stored on the filesystem                                                    |
-|`/upload/<file path>` | POST    | For uploading files on to the filesystem. Files are sent as body of HTTP post requests            |
-|`/delete/<file path>` | POST    | Command for deleting a file from the filesystem                                                   |
+### 1. Pick/Register a Domain
+- You can use **any** domain or subdomain.  
+- If you need a free subdomain, try services like **No-IP** or **ClouDNS**.  
+- Add your domain to the https://device-tunnel.top/ service.
 
-File server implementation can be found under `main/file_server.c`. `main/upload_script.html` has some HTML, JavaScript and Ajax content used for file uploading, which is embedded in the flash image and used as it is when generating the home page of the file server.
+### 2. Add the Component to Your ESP-IDF Project
 
-Note that the default `/index.html` and `/favicon.ico` files can be overridden by uploading files with same name to the filesystem.
-
-## How to use the example
-
-### Wi-Fi/Ethernet connection
-```
-idf.py menuconfig
-```
-Open the project configuration menu (`idf.py menuconfig`) to configure Wi-Fi or Ethernet. See "Establishing Wi-Fi or Ethernet Connection" section in [examples/protocols/README.md](../../README.md) for more details.
-
-### SD card (optional)
-
-By default the example uses SPIFFS filesystem in SPI flash for file storage.
-
-To use an SD card for file storage instead, open the project configuration menu (`idf.py menuconfig`) and enter "File_serving example menu". Then enable "Use SD card for file storage" (`CONFIG_EXAMPLE_MOUNT_SD_CARD`) option.
-
-SD cards can be used either over SPI interface (on all ESP chips) or over SDMMC interface (on ESP32 and ESP32-S3). To use SDMMC interface, enable "Use SDMMC host" (`CONFIG_EXAMPLE_USE_SDMMC_HOST`) option. To use SPI interface, disable this option.
-
-GPIO pins used to connect the SD card can be configured for the SPI interface (on all chips), or for SDMMC interface on chips where it uses GPIO matrix (ESP32-S3). This can be done in "SD card pin configuration" submenu.
-
-The example will be able to mount only cards formatted using FAT32 filesystem. If the card is formatted as exFAT or some other filesystem, you have an option to format it in the example code — "Format the card if mount failed" (`CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED`).
-
-For more information on pin configuration for SDMMC and SDSPI, check related examples: [sdmmc](../../../storage/sd_card/sdmmc/README.md), [sdspi](../../../storage/sd_card/sdmmc/README.md).
-
-### Build and Flash
-
-Build the project and flash it to the board, then run monitor tool to view serial output:
-
-```
-idf.py -p PORT flash monitor
+**Option A: Git-based dependency**  
+In your project's top-level `idf_component.yml`, add:
+```yaml
+dependencies:
+  esp-idf-tunnel:
+    git: https://github.com/bahr1k/esp-idf-tunnel
+    version: "v0.2.5"
 ```
 
-(Replace PORT with the name of the serial port to use.)
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
-
-### Working with the example
-
-1. Note down the IP assigned to your ESP module. The IP address is logged by the example as follows:
-
-   ```
-   I (5424) example_connect: - IPv4 address: 192.168.1.100
-   I (5424) example_connect: - IPv6 address:    fe80:0000:0000:0000:86f7:03ff:fec0:1620, type: ESP_IP6_ADDR_IS
-   ```
-
-   The following steps assume that IP address 192.168.1.100 was assigned.
-
-2. Test the example interactively in a web browser. The default port is 80.
-
-    1. Open path http://192.168.1.100/ or http://192.168.1.100/index.html to see an HTML page with list of files on the server. The page will initially be empty.
-    2. Use the file upload form on the webpage to select and upload a file to the server.
-    3. Click a file link to download / open the file on browser (if supported).
-    4. Click the delete link visible next to each file entry to delete them.
-
-3. Test the example using curl:
-
-    1. `myfile.html` can be uploaded to `/path/on/device/myfile_copy.html` using:
-       ```
-       curl -X POST --data-binary @myfile.html 192.168.43.130:80/upload/path/on/device/myfile_copy.html
-       ```
-
-    2. Download the uploaded file back:
-       ```
-       curl 192.168.43.130:80/path/on/device/myfile_copy.html > myfile_copy.html`
-       ```
-
-    3. Compare the copy with the original using `cmp myfile.html myfile_copy.html`
-
-
-## Note
-
-Browsers often send large header fields when an HTML form is submit. Therefore, for the purpose of this example, `HTTPD_MAX_REQ_HDR_LEN` has been increased to 1024 in `sdkconfig.defaults`. User can adjust this value as per their requirement, keeping in mind the memory constraint of the hardware in use.
-
-## Example Output
-
+**Option B: Clone directly into components/**
+```bash
+cd <your-esp-idf-project>
+mkdir -p components
+cd components
+git clone https://github.com/bahr1k/esp-idf-tunnel.git esp-idf-tunnel
+cd esp-idf-tunnel
+git checkout v0.2.5
 ```
-I (5583) example_connect: Got IPv6 event: Interface "example_connect: sta" address: fe80:0000:0000:0000:266f:28ff:fe80:2c74, type: ESP_IP6_ADDR_IS_LINK_LOCAL
-I (5583) example_connect: Connected to example_connect: sta
-I (5593) example_connect: - IPv4 address: 192.168.194.219
-I (5593) example_connect: - IPv6 address: fe80:0000:0000:0000:266f:28ff:fe80:2c74, type: ESP_IP6_ADDR_IS_LINK_LOCAL
-I (5603) example: Initializing SPIFFS
-I (5723) example: Partition size: total: 896321, used: 0
-I (5723) file_server: Starting HTTP Server on port: '80'
-I (28933) file_server: Receiving file : /test.html...
-I (28933) file_server: Remaining size : 574
-I (28943) file_server: File reception complete
-I (28993) file_server: Found file : test.html (574 bytes)
-I (35943) file_server: Sending file : /test.html (574 bytes)...
-I (35953) file_server: File sending complete
-I (45363) file_server: Deleting file : /test.html
+
+### 3. Configure the Tunnel 
+
+**Option A: In Code**  
+Inside your application code (e.g., in `app_main()`), you only need to set up one struct—all other defaults come from `TUNNEL_DEFAULT_CONFIG()`:
+```c
+#include "tunnel.h"
+// … (Wi-Fi setup, HTTP server init, etc.) …
+
+// Setup tunnel
+tunnel_config_t tunnel = TUNNEL_DEFAULT_CONFIG();
+tunnel.domain = "myesp.mydomain.com";  // set your domain
+tunnel.secret = "my_secret";           // set your tunnel service key here
+tunnel.name   = desc->project_name;    // typically your project or device name
+
+ESP_ERROR_CHECK(tunnel_init(&tunnel)); // run tunnel task
 ```
+
+**Option B: In Menu Config**
+- Find the Web Tunnel section in `idf.py menuconfig`
+- Set your domain and secret options
+- These values will automatically be applied to `TUNNEL_DEFAULT_CONFIG()`
+
+## Accessing Multiple Devices Under One Domain
+
+If you host multiple ESP32 devices behind the same tunnel service, you can route by path. For example:
+- Device A uses `domain = "mygroup.example.com"`, `name = "deviceA"`
+- Device B uses the same domain, `name = "deviceB"`
+
+Then clients can access:
+```
+https://mygroup.example.com/deviceA/...
+https://mygroup.example.com/deviceB/...
+```
+
+The tunnel service will route based on the name prefix. By default, it will route to the device that is set as primary on the service.
+
+## Requirements
+
+- ESP-IDF 5.0 or higher
+- Internet access (STA mode) for your ESP32
+- A registered domain (or subdomain) pointing to a compatible tunnel service
+
+## Configuration Reference
+
+The `tunnel_config_t` structure provides the following configuration options:
+
+```c
+typedef struct {
+    const char *domain;           // Your tunnel domain (required)
+    const char *secret;           // Tunnel service authentication key (required)
+    const char *name;             // Device name for routing (optional)
+    const char *client_cert;      // Client certificate for mutual TLS (optional)
+    const char *client_key;       // Client private key for mutual TLS (optional)
+    int32_t reconnect_timeout_ms; // Reconnect timeout in milliseconds (0 to disable auto-reconnect)
+    size_t rx_buffer_size;        // WebSocket receive buffer size in bytes
+    size_t tx_buffer_size;        // WebSocket transmit buffer size in bytes
+    tunnel_rx_func_t *rx_func;    // Custom function for receiving data (used when local server proxy is disabled)
+    tunnel_tx_func_t *tx_func;    // Custom function for sending data (used when local server proxy is disabled)
+    uint16_t local_port;          // Local HTTP server port (0 = disabled, requires custom rx/tx functions)
+    uint8_t auto_eof;             // Automatically send EOF markers in responses (1 = enabled, 0 = disabled)
+    uint8_t is_public;            // Access control (0 = private with service authorization, 1 = public access)
+    uint8_t non_block;            // WebSocket mode (0 = blocking, 1 = non-blocking)
+} tunnel_config_t;
+```
+
+### Configuration Details
+
+**Required Parameters:**
+- `domain`: The domain name that will route to your ESP32
+- `secret`: Authentication key provided by your tunnel service
+
+**Optional Parameters:**
+- `name`: Device identifier for multi-device routing under one domain
+- `client_cert`/`client_key`: For mutual TLS authentication with the tunnel service
+- `reconnect_timeout_ms`: How long to wait before attempting reconnection (default: auto-reconnect enabled)
+- `rx_buffer_size`/`tx_buffer_size`: WebSocket buffer sizes for performance tuning
+- `local_port`: Port of your local HTTP server (set to 0 for custom handling)
+- `auto_eof`: Controls automatic EOF marker insertion in HTTP responses
+- `is_public`: Whether the tunnel requires service-level authorization
+- `non_block`: Socket blocking behavior
+
+**Custom Functions:**
+When `local_port` is set to 0, you must provide custom `rx_func` and `tx_func` implementations to handle incoming requests and outgoing responses manually.
+
+## License
+
+MIT
+
+## Contributing / Feedback
+
+If you find a bug, have a feature request, or want to contribute, please file an issue or submit a PR on the GitHub repo.
