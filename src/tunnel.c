@@ -1154,7 +1154,7 @@ static esp_err_t tunnel_outgoing_data_auto_eof(void)
             {
                 if (total_sent > 0 && header_sent)
                     send_eof();
-                ESP_LOGE(TAG, "Error reading from local server: %s", strerror(err));
+                ESP_LOGW(TAG, "Error reading from local server: %s", strerror(err));
                 return tunnel_on_error(false, NULL);
             }
         }
@@ -1306,7 +1306,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
             }
             else
             {
-                ESP_LOGE(TAG, "Error reading from local server: %s", strerror(err));
+                ESP_LOGW(TAG, "Error reading from local server: %s", strerror(err));
                 return tunnel_on_error(false, NULL);
             }
         }
