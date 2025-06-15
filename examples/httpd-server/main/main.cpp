@@ -11,6 +11,8 @@
 
 static const char *TAG = "example";
 
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 #define MANUAL_EOF 0
 
 #if MANUAL_EOF
@@ -58,7 +60,7 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
         ESP_LOGI(TAG, "WiFi connected, waiting for tunnel connection");
 }
 
-void app_main(void)
+void setup(void)
 {
     const esp_app_desc_t *desc = esp_app_get_description();
 
@@ -102,10 +104,9 @@ void app_main(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = "Your SSID",
-            .password = "Your Password",
-        },
-    };
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASSWORD,
+        }};
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -133,10 +134,23 @@ void app_main(void)
     httpd_uri_t device_uri = {
         .uri = uri,
         .method = HTTP_GET,
-        .handler = hello_html_get_handler,
-    };
+        .handler = hello_html_get_handler};
     httpd_register_uri_handler(server, &device_uri);
 
     ESP_LOGI(TAG, "Server started");
-    vTaskDelete(NULL);
 }
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+    void app_main(void)
+    {
+        setup();
+        vTaskDelete(NULL);
+    }
+
+#ifdef __cplusplus
+}
+#endif
