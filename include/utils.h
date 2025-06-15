@@ -24,7 +24,6 @@ extern "C"
     bool parse_uri(const char *uri, char **host, int *port, bool *use_ssl);
 
 #ifdef __cplusplus
-    extern "C"
 }
 #endif
 #endif
