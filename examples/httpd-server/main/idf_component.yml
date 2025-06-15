@@ -2,4 +2,4 @@ dependencies:
   idf: '>=5.0'
   esp-idf-tunnel:
     git: https://github.com/bahr1k/esp-idf-tunnel
-    version: "0.3.2"
+    version: "0.3.4"

@@ -31,7 +31,7 @@ In your project's top-level `idf_component.yml`, add:
 dependencies:
   esp-idf-tunnel:
     git: https://github.com/bahr1k/esp-idf-tunnel
-    version: "0.3.2"
+    version: "0.3.4"
 ```
 
 **Option B: Clone directly into components/**
@@ -41,7 +41,7 @@ mkdir -p components
 cd components
 git clone https://github.com/bahr1k/esp-idf-tunnel.git esp-idf-tunnel
 cd esp-idf-tunnel
-git checkout 0.3.2
+git checkout 0.3.4
 ```
 
 ### 3. Configure the Tunnel 
