@@ -11,10 +11,11 @@
 #define TUNNEL_DEFAULT_TX_BUFFER_SIZE 4096
 #define TUNNEL_BUFFER_MIN_SIZE 256
 
-#define TUNNEL_SELECT_TIMEOUT_MKS 20000
-#define TUNNEL_SELECT_TLS_TIMEOUT_MKS 50000
-#define TUNNEL_LATENCY_MS 100
-#define MAX_EAGAIN_ATTEMPTS 20
+#define LOCAL_SELECT_TIMEOUT_MKS 50000
+#define TUNNEL_SELECT_TIMEOUT_MKS 100000
+#define TUNNEL_SELECT_TLS_TIMEOUT_MKS 150000
+#define TUNNEL_LATENCY_MS 150
+#define MAX_EAGAIN_ATTEMPTS 30
 // todo remove, only for local test
 // #define TEST_CERT 1
 
@@ -70,7 +71,7 @@ typedef struct
     uint8_t is_primary;
 } tunnel_info_t;
 
-typedef int tunnel_tx_func_t(const char *data, size_t len, tunnel_rx_marker_t *marker);
+// typedef int tunnel_tx_func_t(char *data, size_t len, tunnel_rx_marker_t *marker);
 typedef int tunnel_rx_func_t(const char *data, size_t len);
 
 typedef struct
@@ -89,12 +90,15 @@ typedef struct
     size_t tx_buffer_size; // Transmit buffer size
 
     tunnel_rx_func_t *rx_func; // Manula function for receiving data (used if local server proxy is disabled)
-    tunnel_tx_func_t *tx_func; // Manula function for sending data (used if local server proxy is disabled)
+    // tunnel_tx_func_t *tx_func; // Manula function for sending data (used if local server proxy is disabled)
 
     uint16_t local_port; // 0 - disabled local server proxy (you need to provide custom tunnel_tx_func and tunnel_rx_func)
     uint8_t auto_eof;    // 0 - auto send EOF markers in responses
     uint8_t is_public;   // 0 - private, 1 - public
     uint8_t non_block;   // Socket mode (0 = blocking, 1 = non-blocking)
+    uint8_t wifi_watch;  // 0 - disabled, 1 - enabled
+    uint8_t priority;    // Task priority
+    uint16_t stack_size; // Task stack size
 } tunnel_config_t;
 
 #define TUNNEL_DEFAULT_CONFIG()                          \
@@ -109,11 +113,14 @@ typedef struct
         .rx_buffer_size = MAX_HTTP_REQUEST_SIZE,         \
         .tx_buffer_size = TUNNEL_DEFAULT_TX_BUFFER_SIZE, \
         .rx_func = NULL,                                 \
-        .tx_func = NULL,                                 \
         .local_port = 80,                                \
         .auto_eof = 1,                                   \
         .is_public = 0,                                  \
-        .non_block = 1}
+        .non_block = 1,                                  \
+        .wifi_watch = 1,                                 \
+        .priority = tskIDLE_PRIORITY + 6,                \
+        .stack_size = 1024 * 6,                          \
+    }
 
 #ifdef __cplusplus
 extern "C"
@@ -132,6 +139,8 @@ extern "C"
 
     esp_err_t ws_connect();
     esp_err_t ws_send_text(char *text);
+    void send_internal_error(const char *error_msg);
+    esp_err_t send_eof();
     esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin);
     // esp_err_t ws_client_send_binary(void *data, size_t len, bool fin);
 

@@ -138,19 +138,15 @@ bool parse_uri(const char *uri, char **host, int *port, bool *use_ssl)
 
 bool is_wifi_connected(void)
 {
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) != ESP_OK)
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif)
         return false;
 
-    if (mode & WIFI_MODE_STA)
-    {
-        esp_netif_ip_info_t ip_info;
-        esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        return (sta_netif &&
-                esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK &&
-                ip_info.ip.addr != 0);
-    }
-    return false;
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK)
+        return false;
+
+    return ip_info.ip.addr > 0;
 }
 
 static const char *find_pem_line(const char *input, const char *marker)

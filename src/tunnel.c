@@ -7,6 +7,7 @@
 #include "mbedtls/sha1.h"
 #include "esp_tls.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include <sys/socket.h>
 #include "utils.h"
 #include "cJSON.h"
@@ -14,17 +15,17 @@
 static const char *TAG = "WEB_TUNNEL";
 
 static tunnel_config_t *config = NULL;
-static tunnel_info_t info = {0}; // TUNNEL
+static tunnel_info_t info = {0}; // Tunnel information
 
 // TLS connection
 static esp_tls_t *tls;
-static esp_tls_cfg_t tls_cfg = {0}; // todo move to local stack, not global
-static int ws_sockfd;
+static esp_tls_cfg_t tls_cfg = {0}; // TODO: Move to local stack, not global
+static int ws_sockfd = -1;
 // Local connection
-static int local_sockfd;
+static int local_sockfd = -1;
 
 // State management
-static ws_state_t ws_state = WS_STATE_DISCONNECTED; // TODO move to info
+static ws_state_t ws_state = WS_STATE_DISCONNECTED; // TODO: Move to info
 static TaskHandle_t task_handle;
 static uint64_t last_ping_dt = 0;
 static uint64_t last_data_dt = 0;
@@ -35,20 +36,25 @@ static char *rx_buffer;
 static uint32_t rx_len = 0;
 static uint16_t header_end = 0;
 
-// URI// TODO move to info
+// URI // TODO: Move to info
 static char *host;
 static int port = 0;
 static bool use_ssl = false;
 static bool use_local = false;
 
+// Wathching wifi state
+static bool wifi_connected = false;
+static esp_event_handler_instance_t wifi_event_instance_any_id = NULL;
+static esp_event_handler_instance_t ip_event_instance_got_ip = NULL;
+
 static inline int ws_read(void *data, size_t len)
 {
-    return use_ssl ? esp_tls_conn_read(tls, data, len) : recv(ws_sockfd, data, len, MSG_DONTWAIT); // read(ws_sockfd, data, len);
+    return use_ssl ? esp_tls_conn_read(tls, data, len) : recv(ws_sockfd, data, len, MSG_DONTWAIT); // Read from ws_sockfd
 }
 
 static inline int ws_write(const void *data, size_t len)
 {
-    return use_ssl ? esp_tls_conn_write(tls, data, len) : send(ws_sockfd, data, len, MSG_DONTWAIT); // write(ws_sockfd, data, len);
+    return use_ssl ? esp_tls_conn_write(tls, data, len) : send(ws_sockfd, data, len, MSG_DONTWAIT); // Write to ws_sockfd
 }
 
 esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
@@ -57,12 +63,12 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
         return ESP_ERR_INVALID_STATE;
     if (ws_state != WS_STATE_CONNECTED)
     {
-        ESP_LOGD(TAG, "tunnel not connected, continue");
+        ESP_LOGD(TAG, "Tunnel not connected, continue");
         return ESP_OK;
     }
     if (len <= 0 && (opcode == WS_OPCODE_CONTINUATION || opcode == WS_OPCODE_BINARY || opcode == WS_OPCODE_TEXT))
     {
-        ESP_LOGW(TAG, "logical error len = 0 in ws_send_frame");
+        ESP_LOGW(TAG, "Logical error: len = 0 in ws_send_frame");
         return ESP_OK;
     }
 
@@ -71,13 +77,13 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
 
     ESP_LOGD(TAG, "ws_send_frame: len=%d, fin=%d, opcode=%d", len, fin, opcode);
 
-    // Первый байт: FIN + opcode
+    // First byte: FIN + opcode
     header[header_len++] = (fin ? 0x80 : 0x00) | (opcode & 0x0F);
 
-    // Длина полезной нагрузки
+    // Payload length
     if (len < 126)
     {
-        header[header_len++] = 0x80 | len; // mask bit + len
+        header[header_len++] = 0x80 | len; // Mask bit + len
     }
     else if (len < 65536)
     {
@@ -88,7 +94,7 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
     else
     {
         header[header_len++] = 0x80 | 127;
-        for (int i = 0; i < 4; i++) // 64-bit payload length, first 4 bytes are zero.
+        for (int i = 0; i < 4; i++) // 64-bit payload length, first 4 bytes are zero
             header[header_len++] = 0;
         header[header_len++] = (len >> 24) & 0xFF;
         header[header_len++] = (len >> 16) & 0xFF;
@@ -96,19 +102,18 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
         header[header_len++] = len & 0xFF;
     }
 
-    // Генерация и добавление маски
+    // Generate and add mask
     uint8_t mask_key[4];
     esp_fill_random(mask_key, 4);
     memcpy(&header[header_len], mask_key, 4);
     header_len += 4;
-    // Маскируем данные на месте/ не копируем, туннель один, обработка последовательна
+    // Mask data in place; tunnel is single-threaded, processing is sequential
     for (size_t i = 0; i < len; i++)
         data[i] ^= mask_key[i % 4];
 
-    // Отправляем заголовок
+    // Send header
     size_t written = 0;
-    struct timeval tv = {0, (use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS)};
-    int attempts_eagain = 0; // Например, 20 * 50мс = 1 секундa таймаут
+    int attempts_eagain = 0; // For example, 20 * 50ms = 1 second timeout
     while (written < header_len)
     {
         ssize_t w = ws_write(header + written, header_len - written);
@@ -119,10 +124,11 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
                 attempts_eagain++;
                 if (attempts_eagain > MAX_EAGAIN_ATTEMPTS)
                 {
-                    ESP_LOGE(TAG, "header write timeout");
+                    ESP_LOGE(TAG, "Header write timeout");
                     return ESP_FAIL;
                 }
-                // ждём готовности на запись
+                // Wait for socket to be writable
+                struct timeval tv = {0, (use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS)};
                 fd_set wfds;
                 FD_ZERO(&wfds);
                 FD_SET(ws_sockfd, &wfds);
@@ -131,20 +137,20 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
             }
             else
             {
-                ESP_LOGE(TAG, "header write error %d (%s)", errno, strerror(errno));
+                ESP_LOGE(TAG, "Header write error %d (%s)", errno, strerror(errno));
                 return ESP_FAIL;
             }
         }
-        // w == 0 — соединение закрыто
+        // w == 0 means connection closed
         if (w == 0)
         {
-            ESP_LOGE(TAG, "header write returned 0, peer closed");
+            ESP_LOGE(TAG, "Header write returned 0, peer closed");
             return ESP_FAIL;
         }
         written += w;
     }
 
-    // Отправляем payload
+    // Send payload
     size_t total_written = 0;
     attempts_eagain = 0;
     while (total_written < len)
@@ -154,12 +160,13 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                // Сокет не готов, ждем с помощью select()
+                // Wait for socket to be writable
+                struct timeval tv2 = {0, (use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS)};
                 fd_set writefds;
                 FD_ZERO(&writefds);
                 FD_SET(ws_sockfd, &writefds);
 
-                int activity = select(ws_sockfd + 1, NULL, &writefds, NULL, &tv);
+                int activity = select(ws_sockfd + 1, NULL, &writefds, NULL, &tv2);
                 if (activity < 0)
                 {
                     ESP_LOGE(TAG, "select() for ws write error: %d (%s)", errno, strerror(errno));
@@ -173,7 +180,7 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
                         ESP_LOGE(TAG, "Write to ws failed after %d EAGAIN attempts (timeout).", MAX_EAGAIN_ATTEMPTS);
                         return ESP_FAIL;
                     }
-                    ESP_LOGD(TAG, "timeout ws waiting for write, attempt %d", attempts_eagain);
+                    ESP_LOGD(TAG, "Timeout ws waiting for write, attempt %d", attempts_eagain);
                 }
                 continue;
             }
@@ -192,7 +199,7 @@ esp_err_t ws_send_frame(uint8_t *data, size_t len, ws_opcode_t opcode, bool fin)
         {
             total_written += writen;
             attempts_eagain = 0;
-            ESP_LOGV(TAG, "sent %zu (%d) of %zu bytes to ws", total_written, writen, len);
+            ESP_LOGV(TAG, "Sent %zu (%d) of %zu bytes to ws", total_written, writen, len);
         }
     }
 
@@ -208,14 +215,14 @@ static esp_err_t tunnel_on_error(bool ws, const char *error_msg)
     header_end = 0;
     last_ping_dt = 0;
 
-    if (use_local && local_sockfd > 0)
+    if (use_local && local_sockfd >= 0)
     {
         close(local_sockfd);
         local_sockfd = -1;
     }
 
     if (ws)
-    { // TODO error chek
+    { // TODO: Error check
         info.tunnel_state = TUNNEL_STATE_DISCONNECTED;
 
         free(info.suspend_command);
@@ -226,7 +233,7 @@ static esp_err_t tunnel_on_error(bool ws, const char *error_msg)
         info.eof_marker = NULL;
         info.eof_marker_len = 0;
 
-        if (ws_state == WS_STATE_CONNECTED && ws_sockfd > 0)
+        if (ws_state == WS_STATE_CONNECTED && ws_sockfd >= 0)
         {
             int error = 0;
             socklen_t len = sizeof(error);
@@ -239,8 +246,8 @@ static esp_err_t tunnel_on_error(bool ws, const char *error_msg)
         ws_state = WS_STATE_CLOSING;
         if (use_ssl && tls)
             esp_tls_conn_destroy(tls);
-
-        close(ws_sockfd);
+        else
+            close(ws_sockfd);
         ws_sockfd = -1;
         tls = NULL;
 
@@ -334,14 +341,14 @@ void send_pause_request(void)
         }
         cJSON_Delete(stop);
     }
-    if (use_local && local_sockfd > 0)
+    if (use_local && local_sockfd >= 0)
     {
         close(local_sockfd);
         local_sockfd = -1;
     }
 }
 
-static void send_internal_error(const char *error_msg)
+void send_internal_error(const char *error_msg)
 {
     const char error_page[] = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
     uint16_t err_len = (error_msg ? strlen(error_msg) : 0);
@@ -361,7 +368,7 @@ static void send_internal_error(const char *error_msg)
     free(message);
 }
 
-static esp_err_t send_eof()
+esp_err_t send_eof()
 {
     if (info.eof_marker == NULL || info.eof_marker_len == 0 || !config->auto_eof)
         return ESP_OK;
@@ -377,7 +384,7 @@ static esp_err_t send_eof()
 
 esp_err_t ws_connect()
 {
-    if (ws_state != WS_STATE_DISCONNECTED)
+    if (ws_state != WS_STATE_DISCONNECTED || (config->wifi_watch && !wifi_connected))
         return ESP_ERR_INVALID_STATE;
 
     // ws_state = WS_STATE_CONNECTING;
@@ -409,7 +416,7 @@ esp_err_t ws_connect()
         if (err != ESP_OK)
             return err;
 
-        // Информация о версии TLS/SSL
+        // TLS/SSL version information
         mbedtls_ssl_context *ssl_ctx = esp_tls_get_ssl_context(tls);
         if (ssl_ctx)
         {
@@ -429,7 +436,7 @@ esp_err_t ws_connect()
                      (int)err.last_error, (unsigned int)err.last_error);
             return ESP_FAIL;
         }
-        // Устанавливаем неблокирующий режим
+        // Set non-blocking mode
         if (config->non_block)
         {
             int flags = fcntl(ws_sockfd, F_GETFL, 0);
@@ -443,6 +450,7 @@ esp_err_t ws_connect()
 
     char key_b64[32] = {0};
     size_t key_len;
+
     mbedtls_base64_encode((unsigned char *)key_b64, sizeof(key_b64) - 1, &key_len, key_bytes, 16);
 
     // Send HTTP upgrade request
@@ -475,7 +483,7 @@ retry:
 
     char response[1024] = {0};
     int len = 0;
-    for (int i = 0; i < 40; i++) // 8 seconds timeout //TODO calculate TUNNEL_LATENCY_MS
+    for (int i = 0; i < 40; i++) // 8 seconds timeout //TODO: Calculate TUNNEL_LATENCY_MS
     {
         len = ws_read(response, sizeof(response) - 1);
         int err = errno;
@@ -517,7 +525,7 @@ retry:
         else
         {
             ESP_LOGE(TAG, "Expected '101 Switching Protocols', got: %s", status_line);
-            // Дополнительная диагностика для популярных ошибок
+            // Additional diagnostics for common errors
             if (strstr(status_line, "400"))
                 ESP_LOGE(TAG, "Hint: Verify request format and headers");
             else if (strstr(status_line, "404"))
@@ -529,7 +537,6 @@ retry:
     }
 
     // Check for Switching Protocols
-    // Проверка обязательных заголовков
     bool upgrade_found = false;
     bool connection_found = false;
     bool accept_found = false;
@@ -545,7 +552,7 @@ retry:
             accept_found = true;
         line = strtok(NULL, "\r\n");
     }
-    // Проверка обязательных заголовков
+    // Check required headers
     if (!upgrade_found)
     {
         ESP_LOGE(TAG, "Missing 'Upgrade: websocket' header");
@@ -576,6 +583,18 @@ fail:
     tls = NULL;
     ws_sockfd = -1;
     return ESP_FAIL;
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+        wifi_connected = false;
+        if (ws_state == WS_STATE_CONNECTED)
+            tunnel_on_error(true, "Disconnected from WiFi");
+    }
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+        wifi_connected = true;
 }
 
 static esp_err_t tunnel_process_text_frame()
@@ -626,26 +645,26 @@ static esp_err_t tunnel_process_text_frame()
                 cJSON *eof = cJSON_GetObjectItem(json, "eof");
 
                 if (suspend && cJSON_IsString(suspend))
-                { // Сохраняем команду приостановки туннеля
+                { // Save tunnel suspend command
                     if (info.suspend_command)
                         free(info.suspend_command);
                     info.suspend_command_len = strlen(suspend->valuestring);
                     info.suspend_command = malloc(info.suspend_command_len);
                     if (info.suspend_command)
                         memcpy(info.suspend_command, suspend->valuestring, info.suspend_command_len);
-                    else // TODO on error
+                    else // TODO: Handle error
                         ESP_LOGE(TAG, "Failed to allocate memory for suspend command");
                 }
 
                 if (eof && cJSON_IsString(eof))
-                { // Сохраняем маркер конца файла
+                { // Save end-of-file marker
                     if (info.eof_marker)
                         free(info.eof_marker);
                     info.eof_marker_len = strlen(eof->valuestring);
                     info.eof_marker = malloc(info.eof_marker_len);
                     if (info.eof_marker)
                         memcpy(info.eof_marker, eof->valuestring, info.eof_marker_len);
-                    else // TODO on error
+                    else // TODO: Handle error
                         ESP_LOGE(TAG, "Failed to allocate memory for eof marker");
                 }
 
@@ -675,7 +694,7 @@ static esp_err_t tunnel_process_text_frame()
         cJSON_Delete(json);
     }
     else if (strncmp(rx_buffer, "->", 2) == 0)
-    { // Эхо-сообщение или неразобранный JSON
+    { // Echo message or unparsed JSON
         ESP_LOGI(TAG, "Echo: %s", rx_buffer + 2);
     }
     else
@@ -688,10 +707,11 @@ static esp_err_t tunnel_process_text_frame()
 
 static esp_err_t tunnel_process_bin_frame(bool fin)
 {
-    if (fin && rx_len == info.suspend_command_len && memcmp(rx_buffer, info.suspend_command, rx_len) == 0)
+    if (fin && rx_len == info.suspend_command_len &&
+        memcmp(rx_buffer, info.suspend_command, rx_len) == 0)
     {
         ESP_LOGI(TAG, "Tunnel suspended");
-        if (use_local && local_sockfd > 0)
+        if (use_local && local_sockfd >= 0)
         {
             close(local_sockfd);
             local_sockfd = -1;
@@ -714,7 +734,7 @@ static esp_err_t tunnel_process_bin_frame(bool fin)
         if (header_end == 0 && rx_len >= MAX_HTTP_REQUEST_SIZE)
         {
             send_internal_error("Request headers not found or too long");
-            return tunnel_on_error(false, "Header end not found, or too long");
+            return tunnel_on_error(false, "Request headers end not found, or too long");
         }
         ESP_LOGD(TAG, "INCOMING bin frame len=%lu, fin=%d message: %.*s",
                  rx_len, fin, (int)(rx_len > 64 ? 64 : rx_len), rx_buffer);
@@ -724,9 +744,9 @@ static esp_err_t tunnel_process_bin_frame(bool fin)
         ESP_LOGD(TAG, "INCOMING bin frame chunk len=%lu, fin=%d", rx_len, fin);
     }
 
-    // Write local server
+    // Write to local server
     size_t total_written = 0;
-    int attempts_eagain = 0; // Например, 100 * 50мс = 5 секунд таймаут
+    int attempts_eagain = 0; // For example, 100 * 50ms = 5 seconds timeout
     while (total_written < rx_len)
     {
         int len = write(local_sockfd, rx_buffer + total_written, rx_len - total_written);
@@ -737,41 +757,41 @@ static esp_err_t tunnel_process_bin_frame(bool fin)
                 attempts_eagain++;
                 if (attempts_eagain > MAX_EAGAIN_ATTEMPTS)
                 {
-                    ESP_LOGE(TAG, "Write to local failed after %d EAGAIN attempts (timeout).", MAX_EAGAIN_ATTEMPTS);
+                    ESP_LOGE(TAG, "Write to local failed after %d EAGAIN attempts (timeout)", MAX_EAGAIN_ATTEMPTS);
                     tunnel_on_error(true, NULL);
-                    return ESP_FAIL; // Превышено количество попыток
+                    return ESP_FAIL; // Exceeded number of attempts
                 }
 
-                // Сокет не готов, ждем с помощью select()
+                // Socket not ready, wait using select()
                 fd_set writefds;
                 FD_ZERO(&writefds);
                 FD_SET(local_sockfd, &writefds);
 
                 struct timeval tv;
                 tv.tv_sec = 0;
-                tv.tv_usec = 50000; // Ждем 50 миллисекунд (настройте по необходимости)
+                tv.tv_usec = LOCAL_SELECT_TIMEOUT_MKS; // Wait 50 milliseconds (adjust as needed)
 
                 int activity = select(local_sockfd + 1, NULL, &writefds, NULL, &tv);
 
                 if (activity < 0)
                 {
-                    ESP_LOGE(TAG, "select() for write error: %d (%s)", errno, strerror(errno));
+                    ESP_LOGE(TAG, "write to local error: %d (%s)", errno, strerror(errno));
                     send_internal_error("Internal error");
                     tunnel_on_error(false, NULL);
                     return ESP_FAIL;
                 }
                 else if (activity == 0)
                 {
-                    // Таймаут select, сокет все еще не готов. Продолжаем цикл, attempts_eagain учтет это.
-                    ESP_LOGD(TAG, "select() timeout waiting for write, attempt %d", attempts_eagain);
+                    // Select timeout, socket still not ready. Continue loop, attempts_eagain will track.
+                    ESP_LOGD(TAG, "timeout waiting to local, attempt %d", attempts_eagain);
                     continue;
                 }
-                // Если activity > 0, сокет должен быть готов к записи (FD_ISSET(sockfd, &writefds))
+                // If activity > 0, socket should be ready to write (FD_ISSET(sockfd, &writefds))
                 continue;
             }
             else
-            { // Другая ошибка записи
-                ESP_LOGE(TAG, "Write to local error: %d (%s)", errno, strerror(errno));
+            { // Other write error
+                ESP_LOGE(TAG, "write to local error: %d (%s)", errno, strerror(errno));
                 send_internal_error("Local server busy.");
                 return tunnel_on_error(true, NULL);
             }
@@ -783,9 +803,9 @@ static esp_err_t tunnel_process_bin_frame(bool fin)
             return tunnel_on_error(true, NULL);
         }
         else
-        { // Успешно записана часть данных
+        { // Successfully wrote some data
             total_written += len;
-            attempts_eagain = 0; // Сбрасываем счетчик EAGAIN после успешной записи
+            attempts_eagain = 0; // Reset EAGAIN counter after successful write
             ESP_LOGD(TAG, "Written %d bytes to local, total %zu/%lu", len, total_written, rx_len);
         }
     }
@@ -801,42 +821,42 @@ static esp_err_t tunnel_process_incoming_data()
 {
     fd_set readfds;
     fd_set errfds;
-    struct timeval tv = {0, use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS}; // timeval использует микросекунды
 
     FD_ZERO(&readfds);
     FD_SET(ws_sockfd, &readfds);
 
-    FD_ZERO(&errfds);           //   инициализация errfds
-    FD_SET(ws_sockfd, &errfds); //  добавление сокета в errfds
+    FD_ZERO(&errfds);           // Initialize errfds
+    FD_SET(ws_sockfd, &errfds); // Add socket to errfds
 
+    struct timeval tv = {0, use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS};
     int activity = select(ws_sockfd + 1, &readfds, NULL, &errfds, &tv);
     if (activity < 0)
     {
         ESP_LOGE(TAG, "select() error: %d (%s)", errno, strerror(errno));
-        return ESP_FAIL; // Ошибка самого select
+        return ESP_FAIL; // Error in select itself
     }
 
     if (FD_ISSET(ws_sockfd, &errfds))
     {
         int socket_error = 0;
         socklen_t len = sizeof(socket_error);
-        // Получаем конкретную ошибку сокета
+        // Get specific socket error
         if (getsockopt(ws_sockfd, SOL_SOCKET, SO_ERROR, &socket_error, &len) == 0)
         {
             if (socket_error != 0)
-            { // Если ошибка действительно есть
+            { // If there is an actual error
                 ESP_LOGE(TAG, "Socket error: %d (%s)", socket_error, strerror(socket_error));
                 tunnel_on_error(true, NULL);
-                return ESP_FAIL; // Сокет не "жив" или в состоянии ошибки
+                return ESP_FAIL; // Socket is not "alive" or in error state
             }
-            // Если socket_error == 0, это может быть ложное срабатывание errfds (редко, но возможно на некоторых системах, если select вернул >0,
-            // но ошибка разрешилась до вызова getsockopt).  В этом случае, если readfds также установлен, можно продолжить.
+            // If socket_error == 0, it might be a false errfds trigger (rare, but possible on some systems if select returns >0,
+            // but the error resolved before getsockopt). In this case, if readfds is also set, we can continue.
         }
         else
         {
             ESP_LOGE(TAG, "getsockopt(SO_ERROR) failed: %d (%s)", errno, strerror(errno));
             tunnel_on_error(true, NULL);
-            return ESP_FAIL; // Не смогли определить ошибку, считаем сокет проблемным
+            return ESP_FAIL; // Could not determine error, consider socket problematic
         }
     }
 
@@ -926,12 +946,12 @@ static esp_err_t tunnel_process_incoming_data()
         uint32_t total_readed = 0;
         while (total_readed < payload_len)
         {
-            // Определяем сколько еще можем прочитать в буфер
+            // Determine how much more we can read into the buffer
             size_t buffer_space = config->rx_buffer_size - rx_len;
             size_t remaining_payload = payload_len - total_readed;
             size_t to_read = (remaining_payload < buffer_space) ? remaining_payload : buffer_space;
 
-            // Читаем данные в буфер
+            // Read data into buffer
             size_t readed = 0;
             int attempts = 0;
 
@@ -941,7 +961,7 @@ static esp_err_t tunnel_process_incoming_data()
                 if (len > 0)
                 {
                     readed += len;
-                    attempts = 0; // Сбрасываем счетчик после успешного чтения
+                    attempts = 0; // Reset counter after successful read
                     ESP_LOGV(TAG, "WS Read %d (readed=%zu) bytes, total_readed=%lu of payload_len=%llu",
                              len, readed, total_readed, payload_len);
                 }
@@ -954,16 +974,13 @@ static esp_err_t tunnel_process_incoming_data()
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
                     {
-                        // Сокет не готов, ждем
+                        // Wait for data
                         fd_set readfds;
                         FD_ZERO(&readfds);
                         FD_SET(ws_sockfd, &readfds);
 
-                        // struct timeval tv;
-                        // tv.tv_sec = 0;
-                        // tv.tv_usec = TUNNEL_SELECT_TIMEOUT_MKS; // 50ms
-
-                        int activity = select(ws_sockfd + 1, &readfds, NULL, NULL, &tv);
+                        struct timeval tv2 = {0, use_ssl ? TUNNEL_SELECT_TLS_TIMEOUT_MKS : TUNNEL_SELECT_TIMEOUT_MKS};
+                        int activity = select(ws_sockfd + 1, &readfds, NULL, NULL, &tv2);
                         if (activity < 0)
                         {
                             ESP_LOGE(TAG, "select() error in ws_read: %d (%s)", errno, strerror(errno));
@@ -974,7 +991,7 @@ static esp_err_t tunnel_process_incoming_data()
                             attempts++;
                             ESP_LOGD(TAG, "Read timeout, attempt %d/%d", attempts, MAX_EAGAIN_ATTEMPTS);
                         }
-                        // Если activity > 0, пробуем читать снова
+                        // If activity > 0, try reading again
                     }
                     else
                     {
@@ -991,7 +1008,7 @@ static esp_err_t tunnel_process_incoming_data()
                 return tunnel_on_error(true, "Read timeout");
             }
 
-            // Применяем маску если нужно (только к новым данным)
+            // Apply mask if needed (only to new data)
             if (masked)
                 for (size_t i = 0; i < readed; i++)
                     rx_buffer[rx_len + i] ^= mask[(total_readed + i) % 4];
@@ -999,7 +1016,7 @@ static esp_err_t tunnel_process_incoming_data()
             total_readed += readed;
             rx_len += readed;
 
-            // Проверяем нужно ли обработать данные
+            // Check if data needs to be processed
             bool is_payload_complete = (total_readed == payload_len);
             bool is_buffer_full = (rx_len >= config->rx_buffer_size);
 
@@ -1066,7 +1083,7 @@ static esp_err_t tunnel_outgoing_data_auto_eof(void)
             if (!header_sent)
             {
                 if (header_end_index((char *)tx_buffer, tx_len) == -1)
-                { // ждем полный заголовок
+                { // Wait for complete header
                     wait_max_count--;
                     if (wait_max_count <= 0)
                     {
@@ -1155,7 +1172,7 @@ static esp_err_t tunnel_outgoing_data_auto_eof(void)
                 if (total_sent > 0 && header_sent)
                     send_eof();
                 ESP_LOGW(TAG, "Error reading from local server: %s", strerror(err));
-                return tunnel_on_error(false, NULL);
+                return tunnel_on_error(true, NULL);
             }
         }
     }
@@ -1179,13 +1196,13 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
         {
             tx_len += bytes_read;
 
-            // Проверяем наличие EOF маркера
+            // Check for EOF marker
             if (eof_marker && eof_marker_len > 0 && tx_len >= eof_marker_len)
-            { // Ищем EOF маркер в буфере
+            { // Search for EOF marker in buffer
                 for (size_t i = 0; i <= tx_len - eof_marker_len; i++)
                     if (memcmp(tx_buffer + i, eof_marker, eof_marker_len) == 0)
                     {
-                        // Найден EOF маркер - отправляем данные до конца маркера и завершаем
+                        // Found EOF marker - send data up to the end of the marker and finish
                         size_t data_to_send = i + eof_marker_len;
 
                         esp_err_t ret = ESP_OK;
@@ -1205,7 +1222,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
         }
 
         if (bytes_read > 0)
-        { // Если буфер заполнен, но EOF не найден - отправляем частично,  оставляем место для EOF маркера
+        { // If buffer is filled but EOF not found - send partially, leave space for EOF marker
             if (tx_len >= config->tx_buffer_size - eof_marker_len * 2)
             {
                 wait_max_count = MAX_EAGAIN_ATTEMPTS;
@@ -1213,7 +1230,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
                 if (!header_sent)
                 {
                     if (header_end_index((char *)tx_buffer, tx_len) == -1)
-                    { // ждем полный заголовок
+                    { // Wait for complete header
                         wait_max_count--;
                         if (wait_max_count <= 0)
                         {
@@ -1229,7 +1246,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
                 }
                 else
                 {
-                    // Проверяем размер буфера для предотвращения отправки мелких пакетов
+                    // Check buffer size to prevent sending small packets
                     // if (tx_len < TUNNEL_BUFFER_MIN_SIZE && !low_buf)
                     // {
                     //     low_buf = true;
@@ -1237,7 +1254,6 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
                     //     continue;
                     // }
                     // low_buf = false;
-
                     ret = ws_send_frame(tx_buffer, tx_len, WS_OPCODE_CONTINUATION, false); // fin=false
                 }
 
@@ -1249,8 +1265,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
             }
         }
         else if (bytes_read == 0)
-        {
-            // Соединение закрыто - отправляем оставшиеся данные с fin=true
+        { // Connection closed - send remaining data with fin=true
             if (tx_len > 0)
             {
                 esp_err_t ret = ESP_OK;
@@ -1278,7 +1293,7 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
             if (err == EAGAIN || err == EWOULDBLOCK)
             {
                 if (total_sent == 0 && tx_len == 0)
-                    return ESP_OK; // Просто нет данных для чтения
+                    return ESP_OK; // No data to read
 
                 wait_max_count--;
                 if (wait_max_count <= 0)
@@ -1300,14 +1315,14 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
                     ESP_LOGI(TAG, "WS Sent response %llu bytes (EoF marker from local server timeout, using auto eof)", total_sent);
                     return ESP_OK;
                 }
-                // Нет данных для чтения - небольшая задержка
+                // No data to read - short delay
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
             else
             {
                 ESP_LOGW(TAG, "Error reading from local server: %s", strerror(err));
-                return tunnel_on_error(false, NULL);
+                return tunnel_on_error(true, NULL);
             }
         }
     }
@@ -1315,25 +1330,25 @@ static esp_err_t tunnel_outgoing_data_manual_eof(void)
 
 static esp_err_t tunnel_process_outgoing_data(void)
 {
-    if (!use_local)
-    {
-        tunnel_rx_marker_t marker;
-        int count = config->tx_func((char *)tx_buffer, config->tx_buffer_size, &marker);
-        if (count == 0 || marker == TUNNEL_RX_MARKER_EMPTY)
-            return ESP_OK;
+    // if (!use_local)
+    // {
+    //     tunnel_rx_marker_t marker;
+    //     int count = config->tx_func((char *)tx_buffer, config->tx_buffer_size, &marker);
+    //     if (count == 0 || marker == TUNNEL_RX_MARKER_EMPTY)
+    //         return ESP_OK;
 
-        if (marker == TUNNEL_RX_MARKER_ERROR) // TDOO if flag  TUNNEL_RX_MARKER_START send error page
-            return tunnel_on_error(false, NULL);
+    //     if (marker == TUNNEL_RX_MARKER_ERROR)
+    //         return tunnel_on_error(false, NULL);
 
-        if (marker == TUNNEL_RX_MARKER_EOF)
-            return send_eof();
+    //     if (marker == TUNNEL_RX_MARKER_EOF)
+    //         return send_eof();
 
-        return ws_send_frame(tx_buffer, count,
-                             marker == TUNNEL_RX_MARKER_START ? WS_OPCODE_BINARY : WS_OPCODE_CONTINUATION,
-                             marker == TUNNEL_RX_MARKER_END ? true : false);
-    }
+    //     return ws_send_frame(tx_buffer, count,
+    //                          marker == TUNNEL_RX_MARKER_START ? WS_OPCODE_BINARY : WS_OPCODE_CONTINUATION,
+    //                          marker == TUNNEL_RX_MARKER_END ? true : false);
+    // }
 
-    if (local_sockfd <= 0)
+    if (local_sockfd < 0 || !use_local)
         return ESP_OK;
 
     if (!has_incoming_data_poll(local_sockfd, 0))
@@ -1347,19 +1362,23 @@ static esp_err_t tunnel_process_outgoing_data(void)
 
 static void tunnel_task(void *arg)
 {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    if (is_wifi_connected())
+    vTaskDelay(pdMS_TO_TICKS(100));
+    if (!config)
+        return;
+
+    // ESP_LOGD(TAG, "Tunnel task started,  wifi_watch:%d, wifi_connected:%d", config->wifi_watch, wifi_connected);
+    if (!config->wifi_watch || wifi_connected)
         ws_connect();
 
     while (1)
     {
-        if (!is_wifi_connected())
+        if (config->wifi_watch && !wifi_connected)
         {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(1000)); // TODO event group wait bit?
             continue;
         }
 
-        if (local_sockfd > 0)
+        if (local_sockfd >= 0 || !use_local)
             if (tunnel_process_outgoing_data() != ESP_OK)
                 vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -1374,9 +1393,9 @@ static void tunnel_task(void *arg)
         else if (ws_state == WS_STATE_CONNECTED)
         {
             if (info.tunnel_state != TUNNEL_STATE_RUNNING)
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(pdMS_TO_TICKS(200));
 
-            if (ws_sockfd <= 0 || (use_ssl && !tls))
+            if (ws_sockfd < 0 || (use_ssl && !tls))
             {
                 ESP_LOGE(TAG, "Tunnel connection closed, but not handled");
                 ws_state = WS_STATE_DISCONNECTED;
@@ -1385,8 +1404,10 @@ static void tunnel_task(void *arg)
 
             if (tunnel_process_incoming_data() != ESP_OK)
                 vTaskDelay(pdMS_TO_TICKS(1000));
+            if (ws_state != WS_STATE_CONNECTED)
+                continue;
 
-            // ping logic
+            // Ping logic
             uint64_t now = esp_timer_get_time();
             uint32_t timeout_mks = config->reconnect_timeout_ms > 0 ? config->reconnect_timeout_ms * 1000 : 30000 * 1000;
             if (last_data_dt + timeout_mks < now)
@@ -1430,7 +1451,7 @@ esp_err_t local_client_init()
         int ret = getsockopt(local_sockfd, SOL_SOCKET, SO_ERROR, &error, &len);
         if (ret == 0 && error == 0)
         {
-            return ESP_OK; // Сокет активен
+            return ESP_OK; // Socket is active
         }
         else
         {
@@ -1440,15 +1461,15 @@ esp_err_t local_client_init()
         }
     }
 
-    // Создаем сокет для подключения к локальному серверу
+    // Create socket for connecting to local server
     local_sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (local_sockfd < 0)
     {
-        ESP_LOGE(TAG, "Failed to open local server connection:: %d, %s", errno, strerror(errno));
+        ESP_LOGE(TAG, "Failed to open local server connection: %d, %s", errno, strerror(errno));
         return ESP_FAIL;
     }
 
-    // Устанавливаем неблокирующий режим для recv
+    // Set non-blocking mode for recv
     int flags = fcntl(local_sockfd, F_GETFL, 0);
     fcntl(local_sockfd, F_SETFL, flags | O_NONBLOCK);
 
@@ -1457,7 +1478,7 @@ esp_err_t local_client_init()
     dest_addr.sin_port = htons(config->local_port > 0 ? config->local_port : 80);
     dest_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
 
-    // Временно делаем сокет блокирующим для connect
+    // Temporarily make socket blocking for connect
     fcntl(local_sockfd, F_SETFL, flags);
 
     if (connect(local_sockfd, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) != 0)
@@ -1468,7 +1489,7 @@ esp_err_t local_client_init()
         return ESP_FAIL;
     }
 
-    // Возвращаем неблокирующий режим
+    // Restore non-blocking mode
     if (config->non_block)
         fcntl(local_sockfd, F_SETFL, flags | O_NONBLOCK);
 
@@ -1491,6 +1512,7 @@ static esp_err_t ws_client_init()
     }
 
     ws_state = WS_STATE_DISCONNECTED;
+    info.tunnel_state = TUNNEL_STATE_DISCONNECTED;
 
     // TLS configuration
     if (use_ssl)
@@ -1540,7 +1562,8 @@ static esp_err_t ws_client_init()
     tls_cfg.keep_alive_cfg->keep_alive_interval = 5;
     tls_cfg.keep_alive_cfg->keep_alive_count = 3;
 
-    BaseType_t ret = xTaskCreatePinnedToCore(tunnel_task, "tunnel_task", 1024 * 8, NULL, tskIDLE_PRIORITY + 6, &task_handle, 1);
+    BaseType_t ret = xTaskCreatePinnedToCore(tunnel_task, "tunnel_task", config->stack_size, NULL,
+                                             config->priority, &task_handle, 1);
     if (ret != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create Tunnel task");
@@ -1580,6 +1603,32 @@ esp_err_t tunnel_init(tunnel_config_t *_config)
     }
     memcpy(config, _config, sizeof(tunnel_config_t));
 
+    esp_err_t err;
+    if (config->wifi_watch)
+    {
+        if (wifi_event_instance_any_id || ip_event_instance_got_ip)
+        {
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_instance_any_id);
+            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_instance_got_ip);
+            wifi_event_instance_any_id = ip_event_instance_got_ip = NULL;
+        }
+        err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &wifi_event_instance_any_id);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to register WiFi event handler: %s", esp_err_to_name(err));
+            free(config);
+            return err;
+        }
+        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &ip_event_instance_got_ip);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to register WiFi event handler: %s", esp_err_to_name(err));
+            free(config);
+            return err;
+        }
+        wifi_connected = is_wifi_connected();
+    }
+
     rx_buffer = (char *)malloc(config->rx_buffer_size >= TUNNEL_BUFFER_MIN_SIZE ? config->rx_buffer_size : TUNNEL_DEFAULT_RX_BUFFER_SIZE);
     tx_buffer = (uint8_t *)malloc(config->tx_buffer_size >= TUNNEL_BUFFER_MIN_SIZE ? config->tx_buffer_size : TUNNEL_DEFAULT_TX_BUFFER_SIZE);
     if (!rx_buffer || !tx_buffer)
@@ -1589,17 +1638,15 @@ esp_err_t tunnel_init(tunnel_config_t *_config)
         return ESP_ERR_NO_MEM;
     }
 
-    // if (config->network_timeout_ms < 10000)
-    //     config->network_timeout_ms = 10000;
     if (config->reconnect_timeout_ms != 0 && config->reconnect_timeout_ms < 30000)
     {
         ESP_LOGW(TAG, "Reconnect timeout too short, setting to 30 seconds");
         config->reconnect_timeout_ms = 30000;
     }
 
-    use_local = !(config->rx_func && config->tx_func);
+    use_local = !config->rx_func; // !(config->rx_func && config->tx_func);
 
-    esp_err_t err = ws_client_init();
+    err = ws_client_init();
     if (err != ESP_OK)
     {
         free(config);
@@ -1614,9 +1661,54 @@ esp_err_t tunnel_init(tunnel_config_t *_config)
 void tunnel_destroy(void)
 {
     tunnel_on_error(true, NULL);
-    free(config);
-    free(rx_buffer);
-    free(tx_buffer);
+
+    if (task_handle)
+    {
+        vTaskDelete(task_handle);
+        task_handle = NULL;
+    }
+
+    if (config)
+    {
+        free(config);
+        config = NULL;
+    }
+
+    if (rx_buffer)
+    {
+        free(rx_buffer);
+        rx_buffer = NULL;
+    }
+
+    if (tx_buffer)
+    {
+        free(tx_buffer);
+        tx_buffer = NULL;
+    }
+
+    if (host)
+    {
+        free(host);
+        host = NULL;
+    }
+
+    if (tls_cfg.keep_alive_cfg)
+    {
+        free(tls_cfg.keep_alive_cfg);
+        tls_cfg.keep_alive_cfg = NULL;
+    }
+
+    free_tls_pem_buffer(&tls_cfg.clientcert_buf, &tls_cfg.clientcert_bytes);
+    free_tls_pem_buffer(&tls_cfg.clientkey_buf, &tls_cfg.clientkey_bytes);
+
+    if (wifi_event_instance_any_id || ip_event_instance_got_ip)
+    {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_instance_any_id);
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_instance_got_ip);
+        wifi_event_instance_any_id = ip_event_instance_got_ip = NULL;
+    }
+
+    wifi_connected = false;
 }
 
 void tunnel_get_info(tunnel_info_t *out_info)
